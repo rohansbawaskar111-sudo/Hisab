@@ -1,0 +1,22 @@
+{
+  "short_name": "VibeMatch",
+  "name": "VibeMatch Dating & Social Matching",
+  "icons": [
+    {
+      "src": "/assets/icon-192.png",
+      "type": "image/png",
+      "sizes": "192x192"
+    },
+    {
+      "src": "/assets/icon-512.png",
+      "type": "image/png",
+      "sizes": "512x512"
+    }
+  ],
+  "start_url": "/",
+  "background_color": "#0f172a",
+  "theme_color": "#f43f5e",
+  "display": "standalone",
+  "orientation": "portrait",
+  "description": "Meet people. Share vibes. Make connections."
+}

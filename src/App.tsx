@@ -1,601 +1,473 @@
-/**
- * @license
- * SPDX-License-Identifier: Apache-2.0
- */
+import React, { useState, useEffect, useCallback } from 'react';
+import { Sparkles, Sliders, Shield, RotateCcw, Heart, ChevronRight } from 'lucide-react';
+import { AuthProvider, useAuth } from './context/AuthContext';
+import { AuthScreen } from './components/AuthScreen';
+import { Navigation } from './components/Navigation';
+import { DiscoveryCard } from './components/DiscoveryCard';
+import { ProfileDetailModal } from './components/ProfileDetailModal';
+import { MatchModal } from './components/MatchModal';
+import { SafetyModal } from './components/SafetyModal';
+import { FilterModal } from './components/FilterModal';
+import { ChatView } from './components/ChatView';
+import { ExploreGrid } from './components/ExploreGrid';
+import { LikesYouView } from './components/LikesYouView';
+import { MatchesView } from './components/MatchesView';
+import { UserProfileSettings } from './components/UserProfileSettings';
+import { AdminDashboard } from './components/AdminDashboard';
+import { AdultDatingView } from './components/AdultDatingView';
+import { AICompanionsView } from './components/AICompanionsView';
+import { UserProfile, Match, DiscoveryFilters } from './types';
+import { api } from './api/client';
 
-import React, { useState, useEffect, useMemo, useRef } from 'react';
-import {
-  Transaction,
-  TransactionType,
-  UdharRecord,
-  ActiveTab,
-} from './types';
-import {
-  loadTransactions,
-  saveTransactions,
-  getSampleTransactions,
-  loadUdharRecords,
-  saveUdharRecords,
-  getSampleUdharRecords,
-} from './utils/storage';
-import {
-  subscribeUserTransactions,
-  subscribeUserUdhar,
-  addCloudTransaction,
-  updateCloudTransaction,
-  deleteCloudTransaction,
-  addCloudUdhar,
-  updateCloudUdhar,
-  deleteCloudUdhar,
-  migrateLocalDataToCloud,
-} from './services/db';
-import { useAuth } from './context/AuthContext';
-import { Header } from './components/Header';
-import { SummaryCard } from './components/SummaryCard';
-import { ActionButtons } from './components/ActionButtons';
-import { RecentTransactions } from './components/RecentTransactions';
-import { TransactionModal } from './components/TransactionModal';
-import { UdharSection } from './components/UdharSection';
-import { UdharModal } from './components/UdharModal';
-import { AuthModal } from './components/AuthModal';
-import { ProfileModal } from './components/ProfileModal';
-import { ConfirmModal } from './components/ConfirmModal';
-import { Cloud, LogIn, Loader2, AlertCircle } from 'lucide-react';
+const MainApp: React.FC = () => {
+  const { user, profile, activeTab, setActiveTab, activeChatMatch, setActiveChatMatch } = useAuth();
 
-export default function App() {
-  const { currentUser, loading: authLoading } = useAuth();
-  const [activeTab, setActiveTab] = useState<ActiveTab>('hisab');
-
-  // Transactions state
-  const [transactions, setTransactions] = useState<Transaction[]>(() => {
-    return loadTransactions();
-  });
-  const [isTxModalOpen, setIsTxModalOpen] = useState<boolean>(false);
-  const [modalType, setModalType] = useState<TransactionType>('expense');
-  const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
-
-  // Udhar state
-  const [udharRecords, setUdharRecords] = useState<UdharRecord[]>(() => {
-    return loadUdharRecords();
-  });
-  const [isUdharModalOpen, setIsUdharModalOpen] = useState<boolean>(false);
-  const [editingUdharRecord, setEditingUdharRecord] = useState<UdharRecord | null>(null);
+  // Discovery Deck State
+  const [deck, setDeck] = useState<UserProfile[]>([]);
+  const [isLoadingDeck, setIsLoadingDeck] = useState<boolean>(true);
+  const [swipeDirection, setSwipeDirection] = useState<'left' | 'right' | 'up' | null>(null);
 
   // Modals state
-  const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(false);
-  const [isProfileModalOpen, setIsProfileModalOpen] = useState<boolean>(false);
-  const [confirmDelete, setConfirmDelete] = useState<{
-    type: 'transaction' | 'udhar' | 'reset';
-    id?: string;
-    title: string;
-    message: string;
-  } | null>(null);
+  const [inspectedProfile, setInspectedProfile] = useState<UserProfile | null>(null);
+  const [activeMatch, setActiveMatch] = useState<Match | null>(null);
+  const [showFilters, setShowFilters] = useState<boolean>(false);
+  const [safetyModalConfig, setSafetyModalConfig] = useState<{
+    isOpen: boolean;
+    tab?: 'safety_tips' | 'report' | 'block' | 'verify';
+    targetUser?: UserProfile | null;
+  }>({ isOpen: false });
 
-  // Sync / Cloud state
-  const [isCloudLoading, setIsCloudLoading] = useState<boolean>(false);
-  const [syncError, setSyncError] = useState<string | null>(null);
-  const migratedUserRef = useRef<string | null>(null);
+  // Discovery filters
+  const [filters, setFilters] = useState<DiscoveryFilters>({
+    minAge: 18,
+    maxAge: 45,
+    maxDistanceKm: 60,
+    gender: 'everyone',
+    verifiedOnly: false,
+  });
 
-  // Synchronize with Firebase Firestore when user is logged in
-  useEffect(() => {
-    if (!currentUser) {
-      // Load from local storage for guests
-      setTransactions(loadTransactions());
-      setUdharRecords(loadUdharRecords());
-      setIsCloudLoading(false);
-      return;
+  // Badge counts
+  const [unreadMessages, setUnreadMessages] = useState<number>(0);
+  const [inboundLikesCount, setInboundLikesCount] = useState<number>(0);
+
+  // Load discovery feed
+  const loadDiscoveryFeed = useCallback(async (customFilters?: DiscoveryFilters) => {
+    setIsLoadingDeck(true);
+    try {
+      const feed = await api.getDiscoverFeed(customFilters || filters);
+      setDeck(feed);
+    } catch (e) {
+      console.error('Failed to load discovery feed', e);
+    } finally {
+      setIsLoadingDeck(false);
     }
+  }, [filters]);
 
-    setIsCloudLoading(true);
-    setSyncError(null);
-
-    // Auto-migrate local data if user has local items and hasn't migrated in this session
-    if (migratedUserRef.current !== currentUser.uid) {
-      const localTx = loadTransactions();
-      const localUdhar = loadUdharRecords();
-      if (localTx.length > 0 || localUdhar.length > 0) {
-        migrateLocalDataToCloud(currentUser.uid, localTx, localUdhar)
-          .then(({ migratedTx, migratedUdhar }) => {
-            if (migratedTx > 0 || migratedUdhar > 0) {
-              console.log(`Migrated ${migratedTx} transactions and ${migratedUdhar} udhar records to cloud.`);
-            }
-          })
-          .catch((err) => console.error('Auto-migration warning:', err));
-      }
-      migratedUserRef.current = currentUser.uid;
+  // Load badge counts
+  const loadBadges = useCallback(async () => {
+    if (!user) return;
+    try {
+      const [matches, likes] = await Promise.all([
+        api.getMatches(),
+        api.getInboundLikes(),
+      ]);
+      const unreadTotal = matches.reduce((acc, m) => acc + (m.unreadCount || 0), 0);
+      setUnreadMessages(unreadTotal);
+      setInboundLikesCount(likes.length);
+    } catch (e) {
+      // silent badge fail
     }
-
-    // Subscribe to Firestore transactions
-    const unsubTx = subscribeUserTransactions(
-      currentUser.uid,
-      (data) => {
-        setTransactions(data);
-        setIsCloudLoading(false);
-      },
-      (err) => {
-        console.error('Firestore transactions error:', err);
-        setSyncError('Could not sync transactions from cloud.');
-        setIsCloudLoading(false);
-      }
-    );
-
-    // Subscribe to Firestore udhar
-    const unsubUdhar = subscribeUserUdhar(
-      currentUser.uid,
-      (data) => {
-        setUdharRecords(data);
-        setIsCloudLoading(false);
-      },
-      (err) => {
-        console.error('Firestore udhar error:', err);
-        setSyncError('Could not sync udhar records from cloud.');
-        setIsCloudLoading(false);
-      }
-    );
-
-    return () => {
-      unsubTx();
-      unsubUdhar();
-    };
-  }, [currentUser]);
-
-  // Persist locally for guest users only
-  useEffect(() => {
-    if (!currentUser) {
-      saveTransactions(transactions);
-    }
-  }, [transactions, currentUser]);
+  }, [user]);
 
   useEffect(() => {
-    if (!currentUser) {
-      saveUdharRecords(udharRecords);
-    }
-  }, [udharRecords, currentUser]);
+    loadDiscoveryFeed();
+    loadBadges();
+    const timer = setInterval(loadBadges, 15000); // 15-second background polling
+    return () => clearInterval(timer);
+  }, [loadDiscoveryFeed, loadBadges]);
 
-  // Calculations for Income & Expense
-  const { totalIncome, totalExpense, balance } = useMemo(() => {
-    let income = 0;
-    let expense = 0;
+  // Swipe Action Handlers
+  const currentCard = deck.length > 0 ? deck[0] : null;
 
-    for (const tx of transactions) {
-      if (tx.type === 'income') {
-        income += tx.amount;
-      } else if (tx.type === 'expense') {
-        expense += tx.amount;
-      }
-    }
-
-    return {
-      totalIncome: income,
-      totalExpense: expense,
-      balance: income - expense,
-    };
-  }, [transactions]);
-
-  // Pending Udhar count for header badge
-  const pendingUdharCount = useMemo(() => {
-    return udharRecords.filter((r) => r.status === 'pending').length;
-  }, [udharRecords]);
-
-  // Transaction Actions
-  const handleOpenAddTx = (type: TransactionType) => {
-    setEditingTransaction(null);
-    setModalType(type);
-    setIsTxModalOpen(true);
-  };
-
-  const handleEditTx = (tx: Transaction) => {
-    setEditingTransaction(tx);
-    setModalType(tx.type);
-    setIsTxModalOpen(true);
-  };
-
-  const handleSaveTransaction = async (
-    txData: Omit<Transaction, 'id' | 'createdAt'>
-  ) => {
-    if (currentUser) {
-      try {
-        if (editingTransaction) {
-          await updateCloudTransaction(currentUser.uid, editingTransaction.id, txData);
-        } else {
-          await addCloudTransaction(currentUser.uid, txData);
+  const handleLike = async (target: UserProfile) => {
+    setSwipeDirection('right');
+    try {
+      const res = await api.like(target.userId || target.id);
+      setTimeout(() => {
+        setDeck((prev) => prev.slice(1));
+        setSwipeDirection(null);
+        if (res.isMatch && res.match) {
+          setActiveMatch(res.match);
         }
-      } catch (err) {
-        console.error('Failed to save transaction to cloud:', err);
-        setSyncError('Failed to save to cloud. Please check connection.');
-      }
-    } else {
-      // Local fallback for guest
-      if (editingTransaction) {
-        setTransactions((prev) =>
-          prev.map((t) =>
-            t.id === editingTransaction.id
-              ? { ...t, ...txData, updatedAt: Date.now() }
-              : t
-          )
-        );
-      } else {
-        const newTx: Transaction = {
-          ...txData,
-          id: `tx-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-          createdAt: Date.now(),
-        };
-        setTransactions((prev) => [newTx, ...prev]);
-      }
+      }, 250);
+      loadBadges();
+    } catch (err) {
+      console.error(err);
+      setSwipeDirection(null);
     }
-    setEditingTransaction(null);
   };
 
-  const handleDeleteTransaction = (id: string) => {
-    setConfirmDelete({
-      type: 'transaction',
-      id,
-      title: 'Delete Transaction',
-      message: 'Are you sure you want to delete this transaction record? This cannot be undone.',
-    });
-  };
-
-  // Udhar Actions
-  const handleOpenAddUdhar = () => {
-    setEditingUdharRecord(null);
-    setIsUdharModalOpen(true);
-  };
-
-  const handleEditUdhar = (record: UdharRecord) => {
-    setEditingUdharRecord(record);
-    setIsUdharModalOpen(true);
-  };
-
-  const handleSaveUdhar = async (
-    recordData: Omit<UdharRecord, 'id' | 'createdAt' | 'paidAt'>
-  ) => {
-    if (currentUser) {
-      try {
-        if (editingUdharRecord) {
-          await updateCloudUdhar(currentUser.uid, editingUdharRecord.id, recordData);
-        } else {
-          await addCloudUdhar(currentUser.uid, recordData);
+  const handleSuperLike = async (target: UserProfile) => {
+    setSwipeDirection('up');
+    try {
+      const res = await api.superLike(target.userId || target.id);
+      setTimeout(() => {
+        setDeck((prev) => prev.slice(1));
+        setSwipeDirection(null);
+        if (res.isMatch && res.match) {
+          setActiveMatch(res.match);
         }
-      } catch (err) {
-        console.error('Failed to save udhar to cloud:', err);
-        setSyncError('Failed to save udhar to cloud.');
+      }, 250);
+      loadBadges();
+    } catch (err) {
+      console.error(err);
+      setSwipeDirection(null);
+    }
+  };
+
+  const handlePass = async (target: UserProfile) => {
+    setSwipeDirection('left');
+    try {
+      await api.pass(target.userId || target.id);
+      setTimeout(() => {
+        setDeck((prev) => prev.slice(1));
+        setSwipeDirection(null);
+      }, 250);
+    } catch (err) {
+      console.error(err);
+      setSwipeDirection(null);
+    }
+  };
+
+  // Keyboard navigation shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (activeTab !== 'discover' || !currentCard || inspectedProfile || showFilters || safetyModalConfig.isOpen) {
+        return;
       }
-    } else {
-      // Local fallback
-      if (editingUdharRecord) {
-        setUdharRecords((prev) =>
-          prev.map((u) =>
-            u.id === editingUdharRecord.id
-              ? {
-                  ...u,
-                  ...recordData,
-                  updatedAt: Date.now(),
-                  paidAt: recordData.status === 'paid' ? (u.paidAt || Date.now()) : undefined,
+      if (e.key === 'ArrowLeft') {
+        handlePass(currentCard);
+      } else if (e.key === 'ArrowRight') {
+        handleLike(currentCard);
+      } else if (e.key === 'ArrowUp') {
+        handleSuperLike(currentCard);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [currentCard, activeTab, inspectedProfile, showFilters, safetyModalConfig.isOpen]);
+
+  return (
+    <div className="min-h-screen w-full bg-[#0B0E14] text-white flex flex-col selection:bg-rose-500 selection:text-white">
+      {/* Navigation Header & Mobile Bottom Bar */}
+      <Navigation
+        unreadMessagesCount={unreadMessages}
+        inboundLikesCount={inboundLikesCount}
+      />
+
+      {/* Main Screen Content */}
+      <main className="flex-1 flex flex-col">
+        {/* TAB 1: DISCOVER (Swipe Deck) */}
+        {activeTab === 'discover' && (
+          <div
+            id="screen-discover"
+            className="flex-1 flex flex-col items-center justify-between p-4 max-w-lg mx-auto w-full pb-24 md:pb-8"
+          >
+            {/* Top Toolbar in Discover */}
+            <div className="w-full flex items-center justify-between py-2">
+              <button
+                id="btn-safety-tips"
+                onClick={() =>
+                  setSafetyModalConfig({ isOpen: true, tab: 'safety_tips' })
                 }
-              : u
-          )
-        );
-      } else {
-        const newRecord: UdharRecord = {
-          ...recordData,
-          id: `udhar-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-          createdAt: Date.now(),
-          paidAt: recordData.status === 'paid' ? Date.now() : undefined,
-        };
-        setUdharRecords((prev) => [newRecord, ...prev]);
-      }
-    }
-    setEditingUdharRecord(null);
-  };
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-[#141926] hover:bg-[#1C2333] border border-white/5 text-gray-300 hover:text-white text-xs font-medium transition-colors"
+              >
+                <Shield className="w-3.5 h-3.5 text-rose-400" />
+                <span>Safety Toolkit</span>
+              </button>
 
-  const handleToggleUdharStatus = async (id: string) => {
-    const existing = udharRecords.find((r) => r.id === id);
-    if (!existing) return;
+              <button
+                id="btn-open-filters"
+                onClick={() => setShowFilters(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-[#141926] hover:bg-[#1C2333] border border-white/5 text-gray-300 hover:text-white text-xs font-medium transition-colors"
+              >
+                <Sliders className="w-3.5 h-3.5 text-rose-400" />
+                <span>Filters</span>
+              </button>
+            </div>
 
-    const nextStatus = existing.status === 'pending' ? 'paid' : 'pending';
+            {/* Deck Center Stage */}
+            <div className="flex-1 w-full flex items-center justify-center relative my-auto">
+              {isLoadingDeck ? (
+                <div className="text-center space-y-3">
+                  <div className="w-12 h-12 rounded-full border-2 border-rose-500 border-t-transparent animate-spin mx-auto" />
+                  <p className="text-xs text-gray-400">Tuning into nearby vibes...</p>
+                </div>
+              ) : currentCard ? (
+                <div className="relative w-full max-w-sm flex items-center justify-center">
+                  {/* Visual card stack behind */}
+                  {deck[1] && (
+                    <div className="absolute inset-0 scale-95 translate-y-3 opacity-40 blur-[1px] pointer-events-none rounded-3xl bg-[#141926] border border-white/5 overflow-hidden">
+                      <img
+                        src={deck[1].photos?.[0]?.url}
+                        alt=""
+                        className="w-full h-full object-cover"
+                      />
+                    </div>
+                  )}
 
-    if (currentUser) {
-      try {
-        await updateCloudUdhar(currentUser.uid, id, { status: nextStatus });
-      } catch (err) {
-        console.error('Failed to toggle udhar status in cloud:', err);
-        setSyncError('Failed to update status.');
-      }
-    } else {
-      setUdharRecords((prev) =>
-        prev.map((item) => {
-          if (item.id === id) {
-            return {
-              ...item,
-              status: nextStatus,
-              paidAt: nextStatus === 'paid' ? Date.now() : undefined,
-            };
-          }
-          return item;
-        })
-      );
-    }
-  };
+                  {/* Active Interactive Top Card */}
+                  <DiscoveryCard
+                    profile={currentCard}
+                    swipeDirection={swipeDirection}
+                    onLike={handleLike}
+                    onPass={handlePass}
+                    onSuperLike={handleSuperLike}
+                    onOpenDetails={(p) => setInspectedProfile(p)}
+                  />
+                </div>
+              ) : (
+                /* Deck Exhausted Empty State */
+                <div className="text-center p-8 rounded-3xl bg-[#141926] border border-white/5 max-w-sm space-y-4 shadow-2xl">
+                  <div className="w-16 h-16 rounded-full bg-rose-500/10 flex items-center justify-center text-rose-400 mx-auto">
+                    <Sparkles className="w-8 h-8" />
+                  </div>
+                  <div className="space-y-1">
+                    <h3 className="text-lg font-bold text-white">You're All Caught Up!</h3>
+                    <p className="text-xs text-gray-400 leading-relaxed">
+                      There are no more new profiles matching your current filters right now.
+                    </p>
+                  </div>
+                  <div className="flex flex-col gap-2 pt-2">
+                    <button
+                      id="btn-refresh-deck"
+                      onClick={() => loadDiscoveryFeed()}
+                      className="w-full py-2.5 rounded-2xl bg-rose-500 hover:bg-rose-600 text-white text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors shadow-lg shadow-rose-500/20"
+                    >
+                      <RotateCcw className="w-4 h-4" />
+                      <span>Check Again</span>
+                    </button>
+                    <button
+                      onClick={() => setShowFilters(true)}
+                      className="w-full py-2.5 rounded-2xl bg-white/5 hover:bg-white/10 text-gray-300 hover:text-white text-xs font-semibold transition-colors"
+                    >
+                      Broaden Filters (Age/Distance)
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
 
-  const handleDeleteUdhar = (id: string) => {
-    setConfirmDelete({
-      type: 'udhar',
-      id,
-      title: 'Delete Udhar Record',
-      message: 'Are you sure you want to delete this credit/debt entry? This action is permanent.',
-    });
-  };
+            {/* Micro Helper Note */}
+            <div className="hidden sm:flex items-center gap-4 text-[10px] text-gray-500 pt-3">
+              <span>← Arrow: Pass</span>
+              <span>↑ Arrow: Super Like</span>
+              <span>→ Arrow: Like</span>
+            </div>
+          </div>
+        )}
 
-  // Sample data loaders
-  const handleLoadSampleTransactions = async () => {
-    const samples = getSampleTransactions();
-    if (currentUser) {
-      for (const s of samples) {
-        await addCloudTransaction(currentUser.uid, {
-          type: s.type,
-          amount: s.amount,
-          category: s.category,
-          date: s.date,
-          note: s.note,
-        });
-      }
-    } else {
-      setTransactions(samples);
-      saveTransactions(samples);
-    }
-  };
+        {/* TAB 2: 18+ ADULT DATING MODE */}
+        {activeTab === 'adult-dating' && (
+          <AdultDatingView
+            onOpenProfile={(p) => setInspectedProfile(p)}
+            onLike={handleLike}
+            onPass={handlePass}
+            onStartChat={async (p) => {
+              try {
+                const matches = await api.getMatches();
+                const m = matches.find(
+                  (item) => item.matchedUser.userId === p.userId || item.matchedUser.id === p.userId
+                );
+                if (m) {
+                  setActiveChatMatch(m);
+                  setActiveTab('chat');
+                } else {
+                  setInspectedProfile(p);
+                }
+              } catch {
+                setInspectedProfile(p);
+              }
+            }}
+            onStartVideoCall={async (p) => {
+              try {
+                const matches = await api.getMatches();
+                const m = matches.find(
+                  (item) => item.matchedUser.userId === p.userId || item.matchedUser.id === p.userId
+                );
+                if (m) {
+                  setActiveChatMatch(m);
+                  setActiveTab('chat');
+                } else {
+                  setInspectedProfile(p);
+                }
+              } catch {
+                setInspectedProfile(p);
+              }
+            }}
+          />
+        )}
 
-  const handleLoadSampleUdhar = async () => {
-    const samples = getSampleUdharRecords();
-    if (currentUser) {
-      for (const s of samples) {
-        await addCloudUdhar(currentUser.uid, {
-          personName: s.personName,
-          amount: s.amount,
-          type: s.type,
-          date: s.date,
-          dueDate: s.dueDate,
-          note: s.note,
-          status: s.status,
-        });
-      }
-    } else {
-      setUdharRecords(samples);
-      saveUdharRecords(samples);
-    }
-  };
+        {/* TAB 3: EXPLORE VIBES & SEARCH */}
+        {activeTab === 'explore' && (
+          <ExploreGrid
+            onOpenProfile={(p) => setInspectedProfile(p)}
+            onLikeProfile={handleLike}
+          />
+        )}
 
-  const handleResetData = () => {
-    setConfirmDelete({
-      type: 'reset',
-      title: 'Reset All Sample Data',
-      message: currentUser
-        ? 'Populate your cloud account with default Indian sample transactions and udhar records?'
-        : 'Reset local data with default Indian sample records?',
-    });
-  };
+        {/* TAB 4: LIKES YOU */}
+        {activeTab === 'likes' && (
+          <LikesYouView
+            onOpenProfile={(p) => setInspectedProfile(p)}
+            onLikeBack={handleLike}
+            onPass={handlePass}
+          />
+        )}
 
-  const executeConfirmAction = async () => {
-    if (!confirmDelete) return;
+        {/* TAB 5: MATCHES */}
+        {activeTab === 'matches' && (
+          <MatchesView
+            onOpenProfile={(p) => setInspectedProfile(p)}
+            onStartChat={(m) => {
+              setActiveChatMatch(m);
+              setActiveTab('chat');
+            }}
+          />
+        )}
 
-    if (confirmDelete.type === 'transaction' && confirmDelete.id) {
-      if (currentUser) {
-        try {
-          await deleteCloudTransaction(currentUser.uid, confirmDelete.id);
-        } catch (err) {
-          console.error('Failed to delete cloud transaction:', err);
-        }
-      } else {
-        setTransactions((prev) => prev.filter((tx) => tx.id !== confirmDelete.id));
-      }
-    } else if (confirmDelete.type === 'udhar' && confirmDelete.id) {
-      if (currentUser) {
-        try {
-          await deleteCloudUdhar(currentUser.uid, confirmDelete.id);
-        } catch (err) {
-          console.error('Failed to delete cloud udhar:', err);
-        }
-      } else {
-        setUdharRecords((prev) => prev.filter((item) => item.id !== confirmDelete.id));
-      }
-    } else if (confirmDelete.type === 'reset') {
-      const sampleTx = getSampleTransactions();
-      const sampleUdhar = getSampleUdharRecords();
-      if (currentUser) {
-        // Add sample records to user's cloud account
-        for (const s of sampleTx.slice(0, 3)) {
-          await addCloudTransaction(currentUser.uid, {
-            type: s.type,
-            amount: s.amount,
-            category: s.category,
-            date: s.date,
-            note: s.note,
-          });
-        }
-        for (const u of sampleUdhar.slice(0, 2)) {
-          await addCloudUdhar(currentUser.uid, {
-            personName: u.personName,
-            amount: u.amount,
-            type: u.type,
-            date: u.date,
-            dueDate: u.dueDate,
-            note: u.note,
-            status: u.status,
-          });
-        }
-      } else {
-        setTransactions(sampleTx);
-        setUdharRecords(sampleUdhar);
-        saveTransactions(sampleTx);
-        saveUdharRecords(sampleUdhar);
-      }
-    }
+        {/* TAB 6: CHAT & MESSAGES */}
+        {activeTab === 'chat' && (
+          <ChatView
+            initialMatch={activeChatMatch}
+            onOpenProfile={(p) => setInspectedProfile(p)}
+            onReport={(p) =>
+              setSafetyModalConfig({
+                isOpen: true,
+                tab: 'report',
+                targetUser: p,
+              })
+            }
+            onUnmatchSuccess={() => {
+              setActiveChatMatch(null);
+              loadBadges();
+            }}
+          />
+        )}
 
-    setConfirmDelete(null);
-  };
+        {/* TAB 7: AI COMPANIONS */}
+        {activeTab === 'ai-companions' && <AICompanionsView />}
 
-  if (authLoading) {
+        {/* TAB 8: USER PROFILE SETTINGS */}
+        {activeTab === 'profile' && (
+          <UserProfileSettings
+            onOpenVerification={() =>
+              setSafetyModalConfig({ isOpen: true, tab: 'verify' })
+            }
+          />
+        )}
+
+        {/* TAB 6: ADMIN DASHBOARD */}
+        {activeTab === 'admin' && user?.role === 'admin' && <AdminDashboard />}
+      </main>
+
+      {/* MODALS */}
+      {/* 1. Full Profile Detail Modal */}
+      {inspectedProfile && (
+        <ProfileDetailModal
+          profile={inspectedProfile}
+          onClose={() => setInspectedProfile(null)}
+          onLike={handleLike}
+          onPass={handlePass}
+          onSuperLike={handleSuperLike}
+          onReport={(p) => {
+            setInspectedProfile(null);
+            setSafetyModalConfig({
+              isOpen: true,
+              tab: 'report',
+              targetUser: p,
+            });
+          }}
+          onBlock={(p) => {
+            setInspectedProfile(null);
+            setSafetyModalConfig({
+              isOpen: true,
+              tab: 'block',
+              targetUser: p,
+            });
+          }}
+        />
+      )}
+
+      {/* 2. Match Celebration Modal */}
+      {activeMatch && (
+        <MatchModal
+          match={activeMatch}
+          currentUserProfile={profile}
+          onClose={() => setActiveMatch(null)}
+          onStartChat={(m) => {
+            setActiveMatch(null);
+            setActiveChatMatch(m);
+            setActiveTab('chat');
+          }}
+        />
+      )}
+
+      {/* 3. Safety & Moderation Modal */}
+      {safetyModalConfig.isOpen && (
+        <SafetyModal
+          initialTab={safetyModalConfig.tab}
+          targetUser={safetyModalConfig.targetUser}
+          onClose={() => setSafetyModalConfig({ isOpen: false })}
+          onBlockSuccess={() => {
+            loadDiscoveryFeed();
+            loadBadges();
+          }}
+        />
+      )}
+
+      {/* 4. Filters Modal */}
+      {showFilters && (
+        <FilterModal
+          initialFilters={filters}
+          onClose={() => setShowFilters(false)}
+          onApply={(newFilters) => {
+            setFilters(newFilters);
+            setShowFilters(false);
+            loadDiscoveryFeed(newFilters);
+          }}
+        />
+      )}
+    </div>
+  );
+};
+
+export const App: React.FC = () => {
+  return (
+    <AuthProvider>
+      <AppContent />
+    </AuthProvider>
+  );
+};
+
+const AppContent: React.FC = () => {
+  const { user, isLoading } = useAuth();
+
+  if (isLoading) {
     return (
-      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
-        <div className="flex flex-col items-center gap-3">
-          <div className="w-12 h-12 rounded-2xl bg-emerald-600 flex items-center justify-center text-white text-2xl font-bold shadow-md animate-pulse">
-            ₹
-          </div>
-          <div className="flex items-center gap-2 text-xs font-semibold text-slate-600">
-            <Loader2 className="w-4 h-4 animate-spin text-emerald-600" />
-            <span>Loading Hisab...</span>
-          </div>
-        </div>
+      <div className="min-h-screen w-full bg-[#0B0E14] flex flex-col items-center justify-center text-white space-y-3">
+        <div className="w-10 h-10 rounded-full border-2 border-rose-500 border-t-transparent animate-spin" />
+        <p className="text-xs text-gray-400">Loading VibeMatch...</p>
       </div>
     );
   }
 
-  return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col antialiased">
-      {/* Top Header with Tab Switcher and Auth Status */}
-      <Header
-        activeTab={activeTab}
-        onTabChange={setActiveTab}
-        pendingUdharCount={pendingUdharCount}
-        onResetData={handleResetData}
-        hasTransactions={transactions.length > 0 || udharRecords.length > 0}
-        onOpenAuth={() => setIsAuthModalOpen(true)}
-        onOpenProfile={() => setIsProfileModalOpen(true)}
-      />
+  if (!user) {
+    return <AuthScreen />;
+  }
 
-      {/* Cloud Sync Notice or Guest Banner */}
-      {!currentUser && (
-        <div className="w-full bg-emerald-50/90 border-b border-emerald-200/80 px-4 py-2.5">
-          <div className="max-w-xl mx-auto flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2 min-w-0">
-              <Cloud className="w-4 h-4 text-emerald-600 shrink-0" />
-              <p className="text-xs text-emerald-950 font-medium truncate">
-                Sign in to sync your Hisab securely across all your devices
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={() => setIsAuthModalOpen(true)}
-              className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shrink-0 flex items-center gap-1 shadow-xs cursor-pointer"
-            >
-              <LogIn className="w-3 h-3" />
-              <span>Sign In</span>
-            </button>
-          </div>
-        </div>
-      )}
+  return <MainApp />;
+};
 
-      {/* Sync Error Banner */}
-      {syncError && (
-        <div className="w-full bg-rose-50 border-b border-rose-200 px-4 py-2">
-          <div className="max-w-xl mx-auto flex items-center justify-between text-xs text-rose-700 font-medium">
-            <div className="flex items-center gap-1.5">
-              <AlertCircle className="w-4 h-4 shrink-0" />
-              <span>{syncError}</span>
-            </div>
-            <button
-              type="button"
-              onClick={() => setSyncError(null)}
-              className="text-rose-500 hover:text-rose-800 underline font-bold ml-2 cursor-pointer"
-            >
-              Dismiss
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Main Container - Optimized for mobile & desktop */}
-      <main className="flex-1 w-full max-w-xl mx-auto px-4 py-4 sm:py-6">
-        {isCloudLoading && (
-          <div className="mb-4 flex items-center justify-center gap-2 p-2 bg-emerald-50/60 rounded-xl text-xs text-emerald-700 font-medium border border-emerald-100">
-            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-            <span>Syncing cloud records...</span>
-          </div>
-        )}
-
-        {activeTab === 'hisab' ? (
-          <div>
-            {/* 1. Balance Summary Card */}
-            <SummaryCard
-              totalIncome={totalIncome}
-              totalExpense={totalExpense}
-              balance={balance}
-            />
-
-            {/* 2 & 3. Add Income & Add Expense Buttons */}
-            <ActionButtons
-              onAddIncome={() => handleOpenAddTx('income')}
-              onAddExpense={() => handleOpenAddTx('expense')}
-            />
-
-            {/* 4. Recent Transactions Section with Edit & Delete */}
-            <RecentTransactions
-              transactions={transactions}
-              onDelete={handleDeleteTransaction}
-              onEdit={handleEditTx}
-              onOpenAddModal={handleOpenAddTx}
-              onLoadSamples={handleLoadSampleTransactions}
-            />
-          </div>
-        ) : (
-          /* Udhar Management Section */
-          <UdharSection
-            records={udharRecords}
-            onOpenAddModal={handleOpenAddUdhar}
-            onToggleStatus={handleToggleUdharStatus}
-            onDelete={handleDeleteUdhar}
-            onEdit={handleEditUdhar}
-            onLoadSampleUdhar={handleLoadSampleUdhar}
-          />
-        )}
-      </main>
-
-      {/* Add / Edit Transaction Modal (Income / Expense) */}
-      <TransactionModal
-        isOpen={isTxModalOpen}
-        initialType={modalType}
-        editingTransaction={editingTransaction}
-        onClose={() => {
-          setIsTxModalOpen(false);
-          setEditingTransaction(null);
-        }}
-        onSave={handleSaveTransaction}
-      />
-
-      {/* Add / Edit Udhar Modal */}
-      <UdharModal
-        isOpen={isUdharModalOpen}
-        editingRecord={editingUdharRecord}
-        onClose={() => {
-          setIsUdharModalOpen(false);
-          setEditingUdharRecord(null);
-        }}
-        onSave={handleSaveUdhar}
-      />
-
-      {/* Auth Modal (Google Sign In & Email/Password) */}
-      <AuthModal
-        isOpen={isAuthModalOpen}
-        onClose={() => setIsAuthModalOpen(false)}
-      />
-
-      {/* Profile & Settings Modal */}
-      <ProfileModal
-        isOpen={isProfileModalOpen}
-        onClose={() => setIsProfileModalOpen(false)}
-        totalTransactionsCount={transactions.length}
-        totalUdharCount={udharRecords.length}
-      />
-
-      {/* In-app Confirmation Modal */}
-      <ConfirmModal
-        isOpen={!!confirmDelete}
-        title={confirmDelete?.title || 'Confirm Action'}
-        message={confirmDelete?.message || 'Are you sure?'}
-        confirmLabel={confirmDelete?.type === 'reset' ? 'Proceed' : 'Delete'}
-        onConfirm={executeConfirmAction}
-        onCancel={() => setConfirmDelete(null)}
-      />
-    </div>
-  );
-}
+export default App;

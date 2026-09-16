@@ -1,151 +1,136 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
-import {
-  User,
-  signInWithPopup,
-  signInWithEmailAndPassword,
-  createUserWithEmailAndPassword,
-  signOut,
-  onAuthStateChanged,
-  updateProfile,
-} from 'firebase/auth';
-import { auth, googleProvider } from '../lib/firebase';
-import { syncUserProfile, updateUserProfile } from '../services/db';
-import { UserProfile } from '../types';
+import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import { User, UserProfile, Match } from '../types';
+import { api } from '../api/client';
 
 interface AuthContextType {
-  currentUser: User | null;
-  userProfile: UserProfile | null;
-  loading: boolean;
-  signInWithGoogle: () => Promise<void>;
-  signInWithEmail: (email: string, pass: string) => Promise<void>;
-  signUpWithEmail: (email: string, pass: string, name: string) => Promise<void>;
-  logOut: () => Promise<void>;
-  updateName: (name: string) => Promise<void>;
-  refreshProfile: () => Promise<void>;
+  user: User | null;
+  profile: UserProfile | null;
+  isLoading: boolean;
+  activeTab: 'discover' | 'explore' | 'likes' | 'chat' | 'profile' | 'admin';
+  setActiveTab: (tab: 'discover' | 'explore' | 'likes' | 'chat' | 'profile' | 'admin') => void;
+  activeChatMatch: Match | null;
+  setActiveChatMatch: (match: Match | null) => void;
+  login: (email: string, password: string) => Promise<void>;
+  register: (payload: any) => Promise<void>;
+  demoLogin: (role?: 'user' | 'admin') => Promise<void>;
+  logout: () => void;
+  updateProfile: (updates: Partial<UserProfile>) => Promise<UserProfile>;
+  setProfile: (profile: UserProfile | null) => void;
+  refreshUser: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [currentUser, setCurrentUser] = useState<User | null>(null);
-  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
-  const [loading, setLoading] = useState<boolean>(true);
+export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
+  const [user, setUser] = useState<User | null>(null);
+  const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [activeTab, setActiveTab] = useState<'discover' | 'explore' | 'likes' | 'chat' | 'profile' | 'admin'>('discover');
+  const [activeChatMatch, setActiveChatMatch] = useState<Match | null>(null);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (user) => {
-      setCurrentUser(user);
-      if (user) {
-        try {
-          const profile = await syncUserProfile({
-            uid: user.uid,
-            email: user.email,
-            displayName: user.displayName,
-            photoURL: user.photoURL,
-          });
-          setUserProfile(profile);
-        } catch (err) {
-          console.error('Failed to sync profile on auth change:', err);
-        }
-      } else {
-        setUserProfile(null);
+    const initAuth = async () => {
+      const token = api.getToken();
+      if (!token) {
+        setIsLoading(false);
+        return;
       }
-      setLoading(false);
-    });
 
-    return () => unsubscribe();
+      try {
+        const data = await api.getCurrentUser();
+        setUser(data.user);
+        setProfile(data.profile);
+      } catch (err) {
+        console.warn('Session expired or invalid:', err);
+        api.logout();
+        setUser(null);
+        setProfile(null);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    initAuth();
   }, []);
 
-  const refreshProfile = async () => {
-    if (currentUser) {
-      try {
-        const profile = await syncUserProfile({
-          uid: currentUser.uid,
-          email: currentUser.email,
-          displayName: currentUser.displayName,
-          photoURL: currentUser.photoURL,
-        });
-        setUserProfile(profile);
-      } catch (err) {
-        console.error('Failed to refresh profile:', err);
-      }
-    }
-  };
-
-  const signInWithGoogle = async () => {
+  const login = async (email: string, password: string) => {
+    setIsLoading(true);
     try {
-      const cred = await signInWithPopup(auth, googleProvider);
-      if (cred.user) {
-        const profile = await syncUserProfile({
-          uid: cred.user.uid,
-          email: cred.user.email,
-          displayName: cred.user.displayName,
-          photoURL: cred.user.photoURL,
-        });
-        setUserProfile(profile);
-      }
-    } catch (err: any) {
-      console.error('Google sign in error:', err);
-      if (err.code === 'auth/popup-closed-by-user') {
-        throw new Error('Sign in was cancelled');
-      }
-      throw err;
+      const data = await api.login({ email, password });
+      setUser(data.user);
+      setProfile(data.profile);
+      setActiveTab('discover');
+    } finally {
+      setIsLoading(false);
     }
   };
 
-  const signInWithEmail = async (email: string, pass: string) => {
-    const cred = await signInWithEmailAndPassword(auth, email.trim(), pass);
-    if (cred.user) {
-      const profile = await syncUserProfile({
-        uid: cred.user.uid,
-        email: cred.user.email,
-        displayName: cred.user.displayName,
-        photoURL: cred.user.photoURL,
-      });
-      setUserProfile(profile);
+  const register = async (payload: any) => {
+    setIsLoading(true);
+    try {
+      const data = await api.register(payload);
+      setUser(data.user);
+      setProfile(data.profile);
+      setActiveTab('discover');
+    } finally {
+      setIsLoading(false);
     }
   };
 
-  const signUpWithEmail = async (email: string, pass: string, name: string) => {
-    const cred = await createUserWithEmailAndPassword(auth, email.trim(), pass);
-    if (cred.user) {
-      if (name.trim()) {
-        await updateProfile(cred.user, { displayName: name.trim() });
-      }
-      const profile = await syncUserProfile({
-        uid: cred.user.uid,
-        email: cred.user.email,
-        displayName: name.trim() || cred.user.displayName,
-        photoURL: cred.user.photoURL,
-      });
-      setUserProfile(profile);
+  const demoLogin = async (role: 'user' | 'admin' = 'user') => {
+    setIsLoading(true);
+    try {
+      const data = await api.demoLogin(role);
+      setUser(data.user);
+      setProfile(data.profile);
+      setActiveTab(role === 'admin' ? 'admin' : 'discover');
+    } finally {
+      setIsLoading(false);
     }
   };
 
-  const logOut = async () => {
-    await signOut(auth);
-    setCurrentUser(null);
-    setUserProfile(null);
+  const logout = () => {
+    api.logout();
+    setUser(null);
+    setProfile(null);
+    setActiveChatMatch(null);
+    setActiveTab('discover');
   };
 
-  const updateName = async (name: string) => {
-    if (!currentUser) return;
-    await updateProfile(currentUser, { displayName: name.trim() });
-    await updateUserProfile(currentUser.uid, { displayName: name.trim() });
-    setUserProfile((prev) => (prev ? { ...prev, displayName: name.trim() } : null));
+  const updateProfile = async (updates: Partial<UserProfile>) => {
+    const updated = await api.updateProfile(updates);
+    setProfile(updated);
+    return updated;
+  };
+
+  const refreshUser = async () => {
+    if (!api.getToken()) return;
+    try {
+      const data = await api.getCurrentUser();
+      setUser(data.user);
+      setProfile(data.profile);
+    } catch (e) {
+      console.error('Failed to refresh user', e);
+    }
   };
 
   return (
     <AuthContext.Provider
       value={{
-        currentUser,
-        userProfile,
-        loading,
-        signInWithGoogle,
-        signInWithEmail,
-        signUpWithEmail,
-        logOut,
-        updateName,
-        refreshProfile,
+        user,
+        profile,
+        isLoading,
+        activeTab,
+        setActiveTab,
+        activeChatMatch,
+        setActiveChatMatch,
+        login,
+        register,
+        demoLogin,
+        logout,
+        updateProfile,
+        setProfile,
+        refreshUser,
       }}
     >
       {children}
