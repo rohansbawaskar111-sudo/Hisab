@@ -1,0 +1,6 @@
+{
+  "name": "Hisab",
+  "description": "A secure personal finance, expense, and udhar khaata tracker with Firebase Cloud sync and authentication for Indian users.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
